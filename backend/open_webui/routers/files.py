@@ -2,6 +2,7 @@ import logging
 import os
 import uuid
 import json
+import re
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
@@ -88,18 +89,17 @@ def has_access_to_file(
 def process_uploaded_file(request, file, file_path, file_item, file_metadata, user):
     try:
         if file.content_type:
-            stt_supported_content_types = getattr(
-                request.app.state.config, "STT_SUPPORTED_CONTENT_TYPES", []
-            )
+            stt_supported_content_types = [
+                re.sub(r" *; *", ";", mine).strip()
+                for mine in getattr(
+                    request.app.state.config, "STT_SUPPORTED_CONTENT_TYPES", []
+                )
+                if mine.strip()
+            ] or ["audio/*", "video/webm"]
 
             if any(
-                fnmatch(file.content_type, content_type)
-                for content_type in (
-                    stt_supported_content_types
-                    if stt_supported_content_types
-                    and any(t.strip() for t in stt_supported_content_types)
-                    else ["audio/*", "video/webm"]
-                )
+                fnmatch(re.sub(r" *; *", ";", file.content_type), content_type)
+                for content_type in stt_supported_content_types
             ):
                 file_path = Storage.get_file(file_path)
                 result = transcribe(request, file_path, file_metadata)

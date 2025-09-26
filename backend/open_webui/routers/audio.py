@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import uuid
+import re
 from functools import lru_cache
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
@@ -943,18 +944,15 @@ def transcription(
 ):
     log.info(f"file.content_type: {file.content_type}")
 
-    stt_supported_content_types = getattr(
-        request.app.state.config, "STT_SUPPORTED_CONTENT_TYPES", []
-    )
+    stt_supported_content_types = [
+        re.sub(r" *; *", ";", mine).strip()
+        for mine in getattr(request.app.state.config, "STT_SUPPORTED_CONTENT_TYPES", [])
+        if mine.strip()
+    ] or ["audio/*", "video/webm"]
 
     if not any(
-        fnmatch(file.content_type, content_type)
-        for content_type in (
-            stt_supported_content_types
-            if stt_supported_content_types
-            and any(t.strip() for t in stt_supported_content_types)
-            else ["audio/*", "video/webm"]
-        )
+        fnmatch(re.sub(r" *; *", ";", file.content_type), content_type)
+        for content_type in stt_supported_content_types
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
