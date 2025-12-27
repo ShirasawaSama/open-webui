@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import uuid
@@ -53,6 +54,21 @@ from pydantic import BaseModel
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+############################
+# Compute SHA256 hash of file contents
+############################
+
+
+def compute_and_update_file_hash(file_id: str, contents: bytes):
+    """Background task to compute SHA256 and update file hash."""
+    try:
+        file_hash = hashlib.sha256(contents).hexdigest()
+        Files.update_file_hash_by_id(file_id, file_hash)
+        log.debug(f"Updated file {file_id} with hash {file_hash}")
+    except Exception as e:
+        log.error(f"Error computing/updating hash for file {file_id}: {e}")
 
 
 ############################
@@ -280,6 +296,12 @@ def upload_file_handler(
                 )
                 return {"status": True, **file_item.model_dump()}
         else:
+            # Compute SHA256 hash in background for HTTP caching support
+            if background_tasks:
+                background_tasks.add_task(compute_and_update_file_hash, id, contents)
+            else:
+                compute_and_update_file_hash(id, contents)
+
             if file_item:
                 return file_item
             else:
