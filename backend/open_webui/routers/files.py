@@ -48,6 +48,7 @@ from open_webui.storage.provider import Storage
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
+from open_webui.utils.headers import check_etag
 from open_webui.utils.misc import strict_match_mime_type
 from pydantic import BaseModel
 
@@ -572,7 +573,10 @@ async def update_file_data_content_by_id(
 
 @router.get("/{id}/content")
 async def get_file_content_by_id(
-    id: str, user=Depends(get_verified_user), attachment: bool = Query(False)
+    request: Request,
+    id: str, 
+    user=Depends(get_verified_user), 
+    attachment: bool = Query(False)
 ):
     file = Files.get_file_by_id(id)
 
@@ -593,6 +597,13 @@ async def get_file_content_by_id(
 
             # Check if the file already exists in the cache
             if file_path.is_file():
+                # Check HTTP cache (ETag)
+                file_hash = file.hash
+                if file_hash:
+                    etag_response = check_etag(request, file_hash)
+                    if etag_response:
+                        return etag_response
+                
                 # Handle Unicode filenames
                 filename = file.meta.get("name", file.filename)
                 encoded_filename = quote(filename)  # RFC5987 encoding
@@ -601,6 +612,14 @@ async def get_file_content_by_id(
                 filename = file.meta.get("name", file.filename)
                 encoded_filename = quote(filename)
                 headers = {}
+
+                # Add ETag header for HTTP caching
+                if file_hash:
+                    headers["ETag"] = f'"{file_hash}"'
+                    # Add Cache-Control header to ensure server validation on each request
+                    # no-cache allows caching but requires validation before reuse
+                    # This ensures the browser always checks with the server using If-None-Match
+                    headers["Cache-Control"] = "public, no-cache"
 
                 if attachment:
                     headers["Content-Disposition"] = (
