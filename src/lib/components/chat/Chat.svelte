@@ -744,6 +744,14 @@
 				$socket?.off('events', chatEventHandler);
 				audioQueueInstance?.destroy();
 				audioQueue.set(null);
+				if (scrollMutationObserver) {
+					scrollMutationObserver.disconnect();
+					scrollMutationObserver = null;
+				}
+				if (scrollPollingIntervalId != null) {
+					clearInterval(scrollPollingIntervalId);
+					scrollPollingIntervalId = null;
+				}
 			} catch (e) {
 				console.error(e);
 			}
@@ -1272,16 +1280,95 @@
 		}
 	};
 
-	let scrollRAF = null;
+	////////////////////////////
+	// Auto Scroll
+	////////////////////////////
+	let isUserScrolling = false;
+	let userScrollTimeout: ReturnType<typeof setTimeout>;
+	let scrollMutationObserver: MutationObserver | null = null;
+	let scrollPollingDeadline = 0;
+	let scrollPollingIntervalId: ReturnType<typeof setInterval> | null = null;
 	let contentsRAF = null;
-	const scheduleScrollToBottom = () => {
-		if (!scrollRAF) {
-			scrollRAF = requestAnimationFrame(async () => {
-				scrollRAF = null;
-				await scrollToBottom();
-			});
+
+	function handleUserScrollGesture() {
+		isUserScrolling = true;
+		clearTimeout(userScrollTimeout);
+		userScrollTimeout = setTimeout(() => {
+			isUserScrolling = false;
+		}, 150);
+	}
+
+	function handleMessagesContainerScroll() {
+		const atBottom =
+			messagesContainerElement.scrollHeight - messagesContainerElement.scrollTop <=
+			messagesContainerElement.clientHeight + 5;
+		if (isUserScrolling) {
+			autoScroll = atBottom;
+			if (!atBottom) {
+				stopScrollPolling();
+			}
+		} else if (atBottom) {
+			autoScroll = true;
 		}
+	}
+
+	function stopScrollPolling() {
+		if (scrollPollingIntervalId != null) {
+			clearInterval(scrollPollingIntervalId);
+			scrollPollingIntervalId = null;
+		}
+		scrollPollingDeadline = 0;
+	}
+
+	const isMobile =
+		typeof navigator !== 'undefined' && /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent);
+	// Polling: after each content update we extend a deadline and run an interval that scrolls to bottom.
+	// Do NOT check autoScroll inside the interval: when a big chunk is added, scrollHeight jumps and
+	// on:scroll can set autoScroll=false before we've scrolled, so we'd stop polling and never scroll.
+	// We only require autoScroll when *starting* the poll; once running we keep scrolling until deadline.
+	const POLL_DURATION_MS = 5000;
+	const POLL_INTERVAL_MS = 100;
+	const scheduleScrollToBottom = () => {
+		if (!messagesContainerElement || !autoScroll) return;
+		scrollPollingDeadline = Date.now() + POLL_DURATION_MS;
+		if (scrollPollingIntervalId != null) return;
+
+		let lastScrollHeight = 0;
+		scrollPollingIntervalId = setInterval(() => {
+				if (!autoScroll || Date.now() > scrollPollingDeadline) {
+					clearInterval(scrollPollingIntervalId!);
+					scrollPollingIntervalId = null;
+					return;
+				}
+				if (!messagesContainerElement) return;
+
+				const newScrollHeight = messagesContainerElement.scrollHeight;
+				if (newScrollHeight !== lastScrollHeight) {
+					lastScrollHeight = newScrollHeight;
+					messagesContainerElement.scrollTo({
+						top: newScrollHeight,
+						behavior: 'auto'
+					});
+				}
+		}, POLL_INTERVAL_MS);
 	};
+
+	$: if (messagesContainerElement && typeof MutationObserver !== 'undefined') {
+		if (scrollMutationObserver) scrollMutationObserver.disconnect();
+		scrollMutationObserver = new MutationObserver(scheduleScrollToBottom);
+		scrollMutationObserver.observe(messagesContainerElement, {
+			childList: true,
+			subtree: true,
+			characterData: true
+		});
+	} else if (scrollMutationObserver) {
+		scrollMutationObserver.disconnect();
+		scrollMutationObserver = null;
+	}
+
+	////////////////////////////
+	// Chat Completed Handler
+	////////////////////////////
 	const chatCompletedHandler = async (_chatId, modelId, responseMessageId, messages) => {
 		const res = await chatCompleted(localStorage.token, {
 			model: modelId,
@@ -2761,11 +2848,9 @@
 								class=" pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0 max-w-full z-10 scrollbar-hidden"
 								id="messages-container"
 								bind:this={messagesContainerElement}
-								on:scroll={(e) => {
-									autoScroll =
-										messagesContainerElement.scrollHeight - messagesContainerElement.scrollTop <=
-										messagesContainerElement.clientHeight + 5;
-								}}
+								on:wheel={onUserScrollGesture}
+								on:touchmove={onUserScrollGesture}
+								on:scroll={handleMessagesContainerScroll}
 							>
 								<div class=" h-full w-full flex flex-col">
 									<Messages
